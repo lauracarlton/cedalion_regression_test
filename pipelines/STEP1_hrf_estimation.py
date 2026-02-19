@@ -1,21 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FIG7_STEP1_hrf_estimation.py
-
-Per-subject preprocessing and HRF estimation for the ball-squeezing fNIRS
-dataset. This module loads SNIRF files, prunes bad channels, optionally
-applies motion correction and filtering, runs a GLM to estimate HRFs, and
-saves per-subject results as gzipped pickles for downstream image
-reconstruction.
-
-Usage
------
-Edit the CONFIG section (ROOT_DIR, NOISE_MODEL, RUN_PREPROCESS, etc.) then
-run::
-
-    python FIG8_STEP1_hrf_estimation.py
-
 Inputs
 ------
 - A BIDS-like folder structure under ROOT_DIR containing subject folders with
@@ -40,8 +25,7 @@ Configurables (defaults shown)
     - Task identifier used to build file IDs.
 - N_RUNS (int): 3
     - Number of runs to process per subject.
-- EXCLUDED (list[str]) : ['sub-538', 'sub-549', 'sub-547']
-    - Subject IDs to skip.
+
 
 GLM configuration (constructed from globals)
 ------------------------------------------
@@ -90,30 +74,27 @@ import xarray as xr
 
 from cedalion import units, nirs, io
 from cedalion.io.forward_model import load_Adot
-import cedalion.sigproc.motion_correct as motion
+from cedalion.sigproc import motion
 from cedalion.sigproc.frequency import freq_filter
 
-sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
+sys.path.append("/Users/lauracarlton/Documents/cedalion_regression_test/modules")
 import processing_func as pf
 
 # Turn off all warnings
 warnings.filterwarnings("ignore")
 
 # %% Initial root directory and analysis parameters
-ROOT_DIR = os.path.join("/projectnb", "nphfnirs", "s", "datasets", "BSMW_Laura_Miray_2025", "BS_bids_v2")
+ROOT_DIR = os.path.join("/Users", "lauracarlton", "Documents", "cedalion_regression_test", "tests", "data")
 RUN_PREPROCESS = True
 RUN_HRF_ESTIMATION = True
-SAVE_RESIDUAL = False
-NOISE_MODEL = "ols"
+NOISE_MODEL = "ar_irls"
 TASK = "BS" 
 N_RUNS = 3
-EXCLUDED = []
 
 dirs = os.listdir(ROOT_DIR)
-subject_list = [d for d in dirs if "sub" in d and d not in EXCLUDED]
+subject_list = [d for d in dirs if "sub" in d]
 
-PROBE_DIR = os.path.join(ROOT_DIR, "derivatives", "cedalion", "fw", "probe")
-
+PROBE_DIR = os.path.join(ROOT_DIR, "probe")
 Adot = load_Adot(os.path.join(PROBE_DIR, "Adot.nc"))
 
 if NOISE_MODEL == "ols":
@@ -173,17 +154,11 @@ cfg_mse = {"mse_val_for_bad_data": 1e1, "mse_amp_thresh": 1e-3 * units.V, "block
 
 
 # %% RUN PREPROCESSING
-# make sure derivatives folders exist
-der_dir = os.path.join(cfg_dataset["root_dir"], "derivatives", "cedalion")
-os.makedirs(der_dir, exist_ok=True)
-der_dir = os.path.join(cfg_dataset["root_dir"], "derivatives", "cedalion", "processed_data")
-os.makedirs(der_dir, exist_ok=True)
-
 # loop over subjects and files
 for ss, subject in enumerate(subject_list):
 
     print(f"Processing subject {ss+1} of {len(subject_list)}")
-    SAVE_DIR = os.path.join(der_dir, subject)
+    SAVE_DIR = os.path.join(ROOT_DIR, subject)
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     if RUN_PREPROCESS:
@@ -225,7 +200,7 @@ for ss, subject in enumerate(subject_list):
                 coords={"wavelength": rec["amp"].wavelength},
             )
 
-            rec["od_o"] = nirs.int2od(rec["amp"])
+            rec["od_o"] = nirs.cw.int2od(rec["amp"])
             rec["od_o"].time.attrs["units"] = units.s
 
             if DO_TDDR:
@@ -236,7 +211,7 @@ for ss, subject in enumerate(subject_list):
             if cfg_bandpass["fmin"] > 0 or cfg_bandpass["fmax"] > 0:
                 rec["od_o"] = freq_filter(rec["od_o"], cfg_bandpass["fmin"], cfg_bandpass["fmax"])
 
-            rec["conc_o"] = nirs.od2conc(rec["od_o"], rec.geo3d, dpf)
+            rec["conc_o"] = nirs.cw.od2conc(rec["od_o"], rec.geo3d, dpf)
 
             if file_idx == 0:
                 all_runs = []
@@ -280,7 +255,6 @@ for ss, subject in enumerate(subject_list):
             dims="wavelength",
             coords={"wavelength": wavelengths},
         )
-
         REC_STR = "conc_o"
 
         run_ts_list = [run[REC_STR] for run in all_runs]
