@@ -1,52 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Inputs
-------
-- Root dataset folder containing per-subject `nirs` subfolders and STEP1
-    outputs located under `<ROOT_DIR>/derivatives/cedalion/processed_data/<subject>/`.
-- Forward model `Adot.nc` in the PROBE_DIR used for sensitivity and masking.
-
-Configurables (defaults shown)
------------------------------
-- ROOT_DIR (str): '.../BS_bids'
-        - Path to BIDS-like dataset used by STEP1 outputs and subject SNIRF files.
-- NOISE_MODEL (str): 'ar_irls'
-        - Noise-model label used for solving the GLM when reading per-subject STEP1 outputs.
-- REC_STR (str): 'conc_o'
-        - Record string pointing to concentration data used by STEP1.
-- TASK (str): 'BS'
-    - Task identifier used to build file IDs.
-- MAG_TS_FLAG (str): 'MAG'  # expected values: 'MAG' or 'TS'
-        - Controls whether to reduce HRF to a single magnitude value (MAG) or
-            keep time series (TS) when reconstructing.
-- T_WIN (list[int]): [5, 8]
-        - Time window (seconds) used for computing magnitude when MAG flag is set.
-- HEAD_MODEL (str): 'ICBM152'
-    - head model used for generating sensitivity profile 
-- lambda_R (float): 1e-6
-    - regularization parameter used to scale spatial prior in reconstructions.
-- optional_flag (str): ''
-    - Additional string appended to output filenames (e.g. for noting special cases).
-- EXCLUDED (list): list of subjects to be exluded from analysis
-- cfg_mse (dict): keys for MSE masking and thresholds (see script for defaults).
-- cfg_list (list[dict]): Regularization configurations evaluated (alpha_meas,
-    alpha_spatial, DIRECT, SB, sigma_brain, sigma_scalp).
-
-Outputs
--------
-- For each subject and configuration, a gzipped pickle saved to:
-    `<ROOT_DIR>/derivatives/processed_data/image_space/<subject>/` containing:
-    - 'X_hrf' : reconstructed image(s) (xarray)
-    - 'X_mse' : per-image MSE estimates (xarray)
-
-Assumptions and dependencies
-----------------------------
-- Requires the `cedalion` package and the project's helper modules:
-    `image_recon_func` and `spatial_basis_funs` (sys.path is extended in the
-    script to load these).
-- Uses xarray and pint-aware arrays returned by `cedalion` operations.
-
 Author: Laura Carlton
 """
 # %%
@@ -78,6 +32,87 @@ def run_pipeline_image_recon(
                             REC_STR='conc', 
                             T_WIN=[5,8],
                         ):
+    """
+    Reconstruct brain images from per-subject channel-space HRF estimates.
+    
+    Performs DOT (Diffuse Optical Tomography) image reconstruction using a forward
+    model and configurable regularization. Converts concentration/optical density
+    channel measurements to spatially resolved cortical activation images.
+    
+    Parameters
+    ----------
+    ROOT_DIR : str
+        Root directory containing STEP1 outputs and probe information.
+        Expected: ROOT_DIR/tmp/sub-XXX/processed_data/*.pkl.gz
+    cfg : dict
+        Reconstruction configuration with keys:
+        - 'method' : str, 'conc' (direct) or 'mua2conc' (indirect)
+        - 'alpha_meas' : float, measurement regularization (e.g., 1e4)
+        - 'alpha_spatial' : float, spatial prior strength (e.g., 1e-3)
+        - 'lambda_R' : float, depth regularization (e.g., 1e-6)
+        - 'SB' : bool, use spatial basis functions (Gaussian kernels)
+        - 'sigma_brain' : float, brain basis width in mm (if SB=True)
+        - 'sigma_scalp' : float, scalp basis width in mm (if SB=True)
+    TASK : str, optional
+        Task identifier (default: 'BS').
+    NOISE_MODEL : str, optional
+        Noise model label: 'ols' or 'ar_irls' (default: 'ar_irls').
+    REC_STR : str, optional
+        Recording type: 'conc' for concentration (default: 'conc').
+    T_WIN : list of float, optional
+        Time window [start, end] in seconds for HRF magnitude computation
+        (default: [5, 8]).
+    
+    Returns
+    -------
+    image : xr.DataArray
+        Reconstructed image for first subject with dimensions
+        (trial_type, chromo, flatmap or vertex).
+        Units: molar (M).
+    post_mse : xr.DataArray
+        Posterior MSE (uncertainty) for first subject with same dimensions.
+        Units: molar^2 (M^2).
+    
+    Notes
+    -----
+    Reconstruction methods:
+    - 'conc' (direct): Minimizes ||AΔc - ΔOD||² for concentration changes
+    - 'mua2conc' (indirect): Reconstructs absorption coefficient, then converts
+    
+    Regularization:
+    - Measurement term: α_meas × C_meas⁻¹
+    - Spatial prior: α_spatial × C_spatial⁻¹ (depth-weighted by λ_R)
+    - Spatial basis: Reduces dimensionality via Gaussian kernels (if SB=True)
+    
+    Time window:
+    - HRF is averaged over T_WIN to produce magnitude images
+    - Reduces temporal dimension for spatial reconstruction
+    
+    Head model:
+    - Uses ICBM152 brain/scalp surface templates
+    - Forward model (Adot) maps cortex → channel sensitivity
+    
+    Outputs saved per subject:
+    - {subject}_task-{TASK}_image_hrf_mag_*.pkl.gz
+    
+    Example
+    -------
+    >>> cfg = {
+    ...     "method": "conc",
+    ...     "alpha_meas": 1e4,
+    ...     "alpha_spatial": 1e-3,
+    ...     "lambda_R": 1e-6,
+    ...     "SB": True,
+    ...     "sigma_brain": 1,
+    ...     "sigma_scalp": 5
+    ... }
+    >>> image, mse = run_pipeline_image_recon(
+    ...     ROOT_DIR="/data/BS_bids",
+    ...     cfg=cfg,
+    ...     TASK="BS",
+    ...     T_WIN=[5, 8]
+    ... )
+    """
 
     cfg_mse = {"mse_val_for_bad_data": 1e1, "mse_amp_thresh": 1e-3 * units.V, "blockaverage_val": 0, "mse_min_thresh": 1e-6}
 

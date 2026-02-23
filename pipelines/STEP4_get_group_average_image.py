@@ -1,31 +1,4 @@
 """
-Usage
------
-Run after all per-subject image reconstructions have completed::
-
-        python FIG8_STEP3_get_group_average.py
-
-Configurables (near top of file)
---------------------------------
-- ROOT_DIR: dataset root containing BIDS-like subject folders.
-- PROBE_DIR: forward-model directory used to load Adot and G-matrices.
-- TASK: task name used in per-subject filenames.
-- NOISE_MODEL, fname_flag: filename conventions used to find files.
-- FNAME_FLAG: filename convention for output files - either 'ts' or 'mag'.
-- EXCLUDED: list of subject IDs to skip (e.g. problematic subjects).
-- TRIAL_TYPES: list of trial types to process.
-
-Outputs
--------
-- Per-configuration gzipped pickle under
-    <ROOT_DIR>/derivatives/cedalion/processed_data/image_space/ containing
-    'X_hrf_ts', 'X_mse', 'X_tstat', 'X_std_err', and related group summaries.
-
-Dependencies
-------------
-- cedalion, xarray, numpy and project helper modules (image_recon_func,
-    processing_func, spatial_basis_funs) loaded from the modules/ directory.
-
 Author: Laura Carlton
 """
 
@@ -54,6 +27,78 @@ def run_pipeline_image_group_avg(
                                     NOISE_MODEL='ar_irls',
                                     TRIAL_TYPES=['right', 'left']
                                     ):
+    """
+    Compute weighted group-level statistics for image-space reconstructions.
+    
+    Aggregates per-subject image reconstructions from STEP3 across subjects using
+    inverse-variance weighting. Produces group-level activation maps with
+    within-subject and between-subject variance estimates for statistical inference.
+    
+    Parameters
+    ----------
+    ROOT_DIR : str
+        Root directory containing per-subject image reconstructions from STEP3.
+        Expected: ROOT_DIR/tmp/sub-XXX/processed_data/*_image_*.pkl.gz
+    cfg : dict
+        Reconstruction configuration matching STEP3 (used for filename matching):
+        - 'method' : str, 'conc' or 'mua2conc'
+        - 'alpha_meas' : float
+        - 'alpha_spatial' : float
+        - 'lambda_R' : float
+        - 'SB' : bool
+        - 'sigma_brain' : float
+        - 'sigma_scalp' : float
+    TASK : str, optional
+        Task identifier (default: 'BS').
+    NOISE_MODEL : str, optional
+        Noise model label: 'ols' or 'ar_irls' (default: 'ar_irls').
+    TRIAL_TYPES : list of str, optional
+        Trial types to aggregate (default: ['right', 'left']).
+    
+    Returns
+    -------
+    results : dict
+        Dictionary containing group statistics for all vertices/flatmap positions:
+        - 'mean' : Weighted mean image (xr.DataArray, units: molar)
+        - 'stderr' : Standard error (xr.DataArray, units: molar)
+        - 'tstat' : T-statistic (xr.DataArray, unitless)
+        - 'mse_within' : Within-subject MSE (xr.DataArray, units: molar^2)
+        - 'mse_btw' : Between-subject MSE (xr.DataArray, units: molar^2)
+        
+        All arrays have dimensions (trial_type, chromo, flatmap/vertex).
+    
+    Notes
+    -----
+    Weighting scheme (same as STEP2):
+    - Each subject weighted by 1 / (MSE_within + MSE_between)
+    - Accounts for both measurement noise and inter-subject variability
+    
+    Statistical formulation:
+    - Within-subject variance: 1 / Σ(1/σ²_i) per vertex
+    - Between-subject variance: Weighted squared deviations from group mean
+    - Standard error: √(1 / Σ(1 / (σ²_within + σ²_between)))
+    - T-statistic: mean / SE at each spatial location
+    
+    Output interpretation:
+    - 'mean': Average activation magnitude across subjects
+    - 'stderr': Uncertainty in group estimate (accounts for sample size)
+    - 'tstat': Standardized effect size (for thresholding/visualization)
+    - 'mse_btw': Inter-subject variability (anatomical/functional differences)
+    - 'mse_within': Measurement noise (sensor quality, SNR)
+    
+    Example
+    -------
+    >>> cfg = {"method": "conc", "alpha_meas": 1e4, "alpha_spatial": 1e-3,
+    ...        "lambda_R": 1e-6, "SB": True, "sigma_brain": 1, "sigma_scalp": 5}
+    >>> results = run_pipeline_image_group_avg(
+    ...     ROOT_DIR="/data/BS_bids",
+    ...     cfg=cfg,
+    ...     TASK="BS",
+    ...     TRIAL_TYPES=['right', 'left']
+    ... )
+    >>> # Plot t-statistic map for HbO, right hand condition
+    >>> tstat = results['tstat'].sel(chromo='HbO', trial_type='right')
+    """
 
     PROBE_DIR = os.path.join(ROOT_DIR, 'probe')
 

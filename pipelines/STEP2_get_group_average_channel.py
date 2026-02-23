@@ -1,34 +1,6 @@
 """
-Usage
------
-Run after all per-subject image reconstructions have completed::
-
-        python FIG8_STEP3_get_group_average.py
-
-Configurables (near top of file)
---------------------------------
-- ROOT_DIR: dataset root containing BIDS-like subject folders.
-- PROBE_DIR: forward-model directory used to load Adot and G-matrices.
-- TASK: task name used in per-subject filenames.
-- NOISE_MODEL, fname_flag: filename conventions used to find files.
-- FNAME_FLAG: filename convention for output files - either 'ts' or 'mag'.
-- EXCLUDED: list of subject IDs to skip (e.g. problematic subjects).
-- TRIAL_TYPES: list of trial types to process.
-
-Outputs
--------
-- Per-configuration gzipped pickle under
-    <ROOT_DIR>/derivatives/cedalion/processed_data/image_space/ containing
-    'X_hrf_ts', 'X_mse', 'X_tstat', 'X_std_err', and related group summaries.
-
-Dependencies
-------------
-- cedalion, xarray, numpy and project helper modules (image_recon_func,
-    processing_func, spatial_basis_funs) loaded from the modules/ directory.
-
 Author: Laura Carlton
 """
-
 # %%
 import os
 import pickle
@@ -49,6 +21,63 @@ def run_pipeline_channel_group_avg(
                                     TRIAL_TYPES=['right', 'left'],
                                     GOLDEN_CHANNEL='S53D28'
                             ):
+    """
+    Compute weighted group-level statistics for channel-space HRF estimates.
+    
+    Aggregates per-subject HRF estimates from STEP1 across subjects using
+    inverse-variance weighting. Computes within-subject and between-subject
+    variance components for robust group-level inference.
+    
+    Parameters
+    ----------
+    ROOT_DIR : str
+        Root directory containing per-subject processed data from STEP1.
+        Expected: ROOT_DIR/tmp/sub-XXX/processed_data/*.pkl.gz
+    TASK : str, optional
+        Task identifier for filename matching (default: "BS").
+    NOISE_MODEL : str, optional
+        Noise model label used in STEP1: 'ols' or 'ar_irls' (default: 'ar_irls').
+    REC_STR : str, optional
+        Recording type string: 'conc' for concentration (default: 'conc').
+    TRIAL_TYPES : list of str, optional
+        List of trial types to process (default: ['right', 'left']).
+    GOLDEN_CHANNEL : str, optional
+        Reference channel to return for regression testing (default: 'S53D28').
+    
+    Returns
+    -------
+    results : dict
+        Dictionary containing group statistics for golden channel:
+        - 'mean' : Weighted mean HRF (xr.DataArray, units: molar)
+        - 'stderr' : Standard error (xr.DataArray, units: molar)
+        - 'tstat' : T-statistic (xr.DataArray, unitless)
+        - 'mse_within' : Within-subject MSE (xr.DataArray, units: molar^2)
+        - 'mse_btw' : Between-subject MSE (xr.DataArray, units: molar^2)
+        
+        All arrays have dimensions (trial_type, chromo, time).
+    
+    Notes
+    -----
+    Weighting scheme:
+    - Each subject weighted by 1 / (MSE_within + MSE_between)
+    - Bad channels (from STEP1) assigned high MSE and zero amplitude
+    - Minimum MSE threshold applied for numerical stability
+    
+    Statistical formulation:
+    - Within-subject variance: 1 / Σ(1/σ²_i)
+    - Between-subject variance: Weighted squared deviations from group mean
+    - Standard error: √(1 / Σ(1 / (σ²_within + σ²_between)))
+    
+    Example
+    -------
+    >>> results = run_pipeline_channel_group_avg(
+    ...     ROOT_DIR="/data/BS_bids",
+    ...     TASK="BS",
+    ...     NOISE_MODEL="ar_irls",
+    ...     GOLDEN_CHANNEL='S53D28'
+    ... )
+    >>> print(results['tstat'].sel(chromo='HbO', trial_type='right'))
+    """
 
     PROBE_DIR = os.path.join(ROOT_DIR, 'probe')
     dirs = os.listdir(ROOT_DIR)

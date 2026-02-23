@@ -1,63 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Inputs
-------
-- A BIDS-like folder structure under ROOT_DIR containing subject folders with
-  a `nirs` subfolder and files like
-  `<sub>_task-<TASK>_run-0X_nirs.snirf` plus matching `_events.tsv` files.
-
-Configurables (defaults shown)
------------------------------
-- ROOT_DIR (str): '/projectnb/nphfnirs/s/datasets/BSMW_Laura_Miray_2025/BS_bids'
-    - Root dataset path containing subject folders.
-- RUN_PREPROCESS (bool): True
-    - If True, perform preprocessing and save per-subject intermediate results.
-    - Else, load previously saved preprocessed data.
-- RUN_HRF_ESTIMATION (bool): True
-    - If True, run the GLM-based HRF estimation step.
-- SAVE_RESIDUAL (bool): False
-    - If True, save GLM residuals per subject.
-- NOISE_MODEL (str): 'ols'  # supported: 'ols', 'ar_irls'
-    - Noise model used for GLM fitting.
-    - Controls whether TDDR/bandpass (ols) or raw concentration (ar_irls) is used.
-- TASK (str): 'BS'
-    - Task identifier used to build file IDs.
-- N_RUNS (int): 3
-    - Number of runs to process per subject.
-
-
-GLM configuration (constructed from globals)
-------------------------------------------
-- cfg_GLM (dict): keys set automatically from NOISE_MODEL and DRIFT_ORDER:
-    - do_drift (bool), do_drift_legendre (bool), do_short_sep (bool),
-      drift_order (int), distance_threshold (pint length), short_channel_method (str),
-      noise_model (str), t_delta/t_std/t_pre/t_post (pint time values)
-
-Dataset and pruning parameters
------------------------------
-- cfg_dataset (dict): contains 'root_dir', 'subj_ids', and 'file_ids' (built from TASK and N_RUNS).
-- cfg_prune (dict): channel pruning thresholds and parameters (defaults shown in script):
-    - snr_thresh: 5
-    - sd_thresh: [1, 40] * mm
-    - amp_thresh: [1e-3, 0.84] * V
-    - perc_time_clean_thresh, sci_threshold, psp_threshold, window_length, flag_use_sci, flag_use_psp
-    - channel_sel: derived from the forward-model Adot (`Adot.channel`)
-
-- cfg_bandpass (dict): {'fmin': 0*Hz, 'fmax': 0.5*Hz}  # depends on NOISE_MODEL
-
-- cfg_mse (dict): values used to detect/flag bad channels by MSE and amplitude thresholds.
-
-Outputs
--------
-- Per-subject gzipped pickle under
-  <ROOT_DIR>/derivatives/processed_data/<subj>/ containing HRF estimates,
-  MSE and bad-channel indices.
-
-Dependencies
-------------
-- cedalion (project package), xarray, numpy, pandas, gzip, pickle
-
+""""
 Author: Laura Carlton
 """
 # %% Imports
@@ -77,7 +20,12 @@ from cedalion.io.forward_model import load_Adot
 from cedalion.sigproc import motion, quality
 from cedalion.sigproc.frequency import freq_filter
 
-sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_regression_test/modules")
+# sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_regression_test/modules")
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(TEST_DIR)
+PIPELINES_DIR = os.path.join(PROJECT_ROOT, "modules")
+sys.path.insert(0, PIPELINES_DIR)
+
 import processing_func as pf
 
 # Turn off all warnings
@@ -92,12 +40,74 @@ def run_pipeline_estimate_hrf(
                                 SAVE_DIR=None,
                                 GOLDEN_CHANNEL='S53D28'
                             ):
+    """
+    Run per-subject HRF estimation pipeline from raw fNIRS data.
+    
+    Performs complete preprocessing and GLM-based hemodynamic response function
+    estimation for all subjects in a BIDS-like dataset. Processes multiple runs
+    per subject, applies quality control, motion correction (OLS only), filtering,
+    and GLM fitting with configurable noise models.
+    
+    Parameters
+    ----------
+    ROOT_DIR : str
+        Root directory containing subject folders in BIDS-like structure.
+        Expected structure: ROOT_DIR/sub-XXX/nirs/sub-XXX_task-*_run-*_nirs.snirf
+    TASK : str, optional
+        Task identifier used in filename construction (default: "BS").
+    N_RUNS : int, optional
+        Number of runs to process per subject (default: 3).
+    NOISE_MODEL : str, optional
+        GLM noise model: 'ols' or 'ar_irls' (default: "ar_irls").
+        - 'ols': Uses TDDR, bandpass filtering, polynomial drift
+        - 'ar_irls': No TDDR/filtering, Legendre drift, robust to autocorrelation
+    SAVE_DIR : str, optional
+        Directory for saving intermediate results. If None, uses ROOT_DIR/tmp.
+    GOLDEN_CHANNEL : str, optional
+        Reference channel for regression testing (default: 'S53D28').
+    
+    Returns
+    -------
+    hrf : xr.DataArray
+        HRF estimate for golden channel with dimensions (trial_type, chromo, time).
+        Units: molar (M).
+    mse : xr.DataArray
+        Mean squared error for golden channel HRF with dimensions
+        (trial_type, chromo, time). Units: molar^2 (M^2).
+    
+    Notes
+    -----
+    Pipeline steps:
+    1. Load amplitude data and events
+    2. Apply median filtering (window=3)
+    3. Prune channels based on SNR, amplitude, SD distance
+    4. Convert to optical density
+    5. Apply TDDR motion correction (OLS only)
+    6. Bandpass filter 0-0.5 Hz (OLS only)
+    7. Convert to concentration (HbO, HbR)
+    8. Fit GLM with HRF, drift, and short-separation regressors
+    9. Save per-subject results to SAVE_DIR/subject/processed_data/
+    
+    Configuration is constructed internally based on NOISE_MODEL parameter.
+    
+    Outputs saved per subject:
+    - {subject}_task-{TASK}_conc_hrf_estimates_{NOISE_MODEL}.pkl.gz
+    
+    Example
+    -------
+    >>> hrf, mse = run_pipeline_estimate_hrf(
+    ...     ROOT_DIR="/data/BS_bids",
+    ...     TASK="BS",
+    ...     N_RUNS=3,
+    ...     NOISE_MODEL="ar_irls",
+    ...     SAVE_DIR="/data/output"
+    ... )
+    """
 
     dirs = os.listdir(ROOT_DIR)
     subject_list = [d for d in dirs if "sub" in d]
 
     PROBE_DIR = os.path.join(ROOT_DIR, "probe")
-    Adot = load_Adot(os.path.join(PROBE_DIR, "Adot.nc"))
 
     if NOISE_MODEL == "ols":
         DO_TDDR = True
@@ -146,7 +156,6 @@ def run_pipeline_estimate_hrf(
         "window_length": 5 * units.s,
         "flag_use_sci": False,
         "flag_use_psp": False,
-        "channel_sel": Adot.channel,
     }
 
     cfg_bandpass = {"fmin": F_MIN, "fmax": F_MAX}
@@ -155,7 +164,7 @@ def run_pipeline_estimate_hrf(
     cfg_mse = {"mse_val_for_bad_data": 1e1, "mse_amp_thresh": 1e-3 * units.V, "blockaverage_val": 0, "mse_min_thresh": 1e-6}
 
     # geo3d = xr.load_dataarray(ROOT_DIR + '/probe/geo3d.nc')
-    with open(ROOT_DIR + '/probe/geo3d.pkl', 'rb') as f:
+    with open(os.path.join(PROBE_DIR, "geo3d.pkl"), 'rb') as f:
         geo3d = pickle.load(f)
     
     #% RUN PREPROCESSING
