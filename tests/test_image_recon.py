@@ -29,7 +29,7 @@ Behavior:
 
 Author: Laura Carlton
 """
-
+#%%
 import os
 import sys
 
@@ -146,7 +146,7 @@ def get_config_name(cfg):
     """Generate descriptive name for configuration."""
     method_name = "direct" if cfg["method"] == "conc" else "indirect"
     sb_name = "with_SB" if cfg["SB"] else "no_SB"
-    return f"{method_name}_{sb_name}_as{cfg['alpha_spatial']:.0e}"
+    return f"{method_name}_{sb_name}"
 
 
 def build_reference_path(cfg, data_type, var_name=None):
@@ -340,3 +340,5 @@ else:
 
 print("="*80)
 
+
+# %%
